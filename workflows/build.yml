@@ -1,0 +1,52 @@
+name: Build Delivery Voice APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Download Persian offline model (Vosk)
+        run: |
+          set -e
+          MODEL_URL="https://alphacephei.com/vosk/models/vosk-model-small-fa-0.5.zip"
+          echo "Downloading $MODEL_URL"
+          curl -L -o model.zip "$MODEL_URL"
+          unzip -q model.zip -d model_tmp
+          # The zip extracts to a single top-level folder; move its CONTENTS
+          # directly under assets/model-fa so Vosk finds am/ conf/ graph/ ...
+          mkdir -p app/src/main/assets/model-fa
+          INNER=$(ls -d model_tmp/*/ | head -n 1)
+          echo "Inner model folder: $INNER"
+          cp -r "$INNER"* app/src/main/assets/model-fa/
+          echo "---- model-fa contents ----"
+          ls -la app/src/main/assets/model-fa/
+
+      - name: Generate Gradle wrapper
+        run: gradle wrapper --gradle-version 8.4
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeliveryVoiceApp-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
