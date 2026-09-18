@@ -25,7 +25,11 @@ import org.vosk.Model;
 import org.vosk.Recognizer;
 import org.vosk.android.RecognitionListener;
 import org.vosk.android.SpeechService;
-import org.vosk.android.StorageService;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 
 public class MainActivity extends AppCompatActivity implements RecognitionListener {
 
@@ -37,6 +41,7 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
     private Model model;
     private SpeechService speechService;
     private boolean modelReady = false;
+    private String modelError = null;
     private boolean startPending = false;
     private boolean startWhenModelReady = false;
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -104,41 +109,87 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
         }
     }
 
+    /* Load the model MANUALLY so we can catch native errors (Throwable) and
+       show the real reason on screen instead of getting stuck forever. */
     private void initModel() {
-        StorageService.unpack(this, "model-fa", "model",
-                (m) -> {
-                    model = m;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    File dst = new File(getFilesDir(), "model-fa");
+                    File marker = new File(dst, "am/final.mdl");
+                    if (!marker.exists()) {
+                        String[] top = getAssets().list("model-fa");
+                        if (top == null || top.length == 0) {
+                            modelError = "\u0645\u062f\u0644 \u062f\u0631 \u0641\u0627\u06cc\u0644\u200c\u0647\u0627 \u0646\u06cc\u0633\u062a (assets/model-fa \u062e\u0627\u0644\u06cc)";
+                            jsStatus("\u062e\u0637\u0627\u06cc \u0645\u062f\u0644: " + modelError);
+                            return;
+                        }
+                        copyAssetDir("model-fa", dst);
+                    }
+                    model = new Model(dst.getAbsolutePath());
                     modelReady = true;
                     jsStatus("\u0645\u062f\u0644 \u0635\u0648\u062a\u06cc \u0622\u0645\u0627\u062f\u0647 \u0634\u062f");
                     if (startWhenModelReady) {
                         startWhenModelReady = false;
-                        beginRecognition();
+                        ui.post(new Runnable() { public void run() { beginRecognition(); } });
                     }
-                },
-                (e) -> jsStatus("\u062e\u0637\u0627 \u062f\u0631 \u0628\u0627\u0631\u06af\u0630\u0627\u0631\u06cc \u0645\u062f\u0644 \u0635\u0648\u062a\u06cc"));
+                } catch (Throwable t) {
+                    modelError = String.valueOf(t.getClass().getSimpleName() + ": " + t.getMessage());
+                    jsStatus("\u062e\u0637\u0627\u06cc \u0645\u062f\u0644: " + modelError);
+                }
+            }
+        }).start();
+    }
+
+    private void copyAssetDir(String assetPath, File dst) throws Exception {
+        String[] entries = getAssets().list(assetPath);
+        if (entries != null && entries.length > 0) {
+            dst.mkdirs();
+            for (String e : entries) {
+                copyAssetDir(assetPath + "/" + e, new File(dst, e));
+            }
+        } else {
+            File parent = dst.getParentFile();
+            if (parent != null) parent.mkdirs();
+            InputStream in = getAssets().open(assetPath);
+            OutputStream out = new FileOutputStream(dst);
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            out.flush();
+            out.close();
+            in.close();
+        }
     }
 
     private class VoiceBridge {
         @JavascriptInterface
         public void start() {
-            ui.post(() -> {
-                if (ContextCompat.checkSelfPermission(MainActivity.this,
-                        Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                    startPending = true;
-                    ensureAudioPermission();
-                    return;
+            ui.post(new Runnable() {
+                public void run() {
+                    if (ContextCompat.checkSelfPermission(MainActivity.this,
+                            Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                        startPending = true;
+                        ensureAudioPermission();
+                        return;
+                    }
+                    beginRecognition();
                 }
-                beginRecognition();
             });
         }
 
         @JavascriptInterface
         public void stop() {
-            ui.post(MainActivity.this::stopRecognition);
+            ui.post(new Runnable() { public void run() { stopRecognition(); } });
         }
     }
 
     private void beginRecognition() {
+        if (modelError != null) {
+            jsStatus("\u062e\u0637\u0627\u06cc \u0645\u062f\u0644: " + modelError);
+            return;
+        }
         if (!modelReady || model == null) {
             startWhenModelReady = true;
             jsStatus("\u0645\u062f\u0644 \u0635\u0648\u062a\u06cc \u062f\u0631 \u062d\u0627\u0644 \u0622\u0645\u0627\u062f\u0647\u200c\u0633\u0627\u0632\u06cc... \u06a9\u0645\u06cc \u0635\u0628\u0631 \u06a9\u0646\u06cc\u062f");
@@ -149,8 +200,8 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
             Recognizer rec = new Recognizer(model, 16000.0f);
             speechService = new SpeechService(rec, 16000.0f);
             speechService.startListening(this);
-        } catch (Exception e) {
-            jsStatus("\u0645\u06cc\u06a9\u0631\u0648\u0641\u0648\u0646 \u0641\u0639\u0627\u0644 \u0646\u0634\u062f");
+        } catch (Throwable t) {
+            jsStatus("\u0645\u06cc\u06a9\u0631\u0648\u0641\u0648\u0646 \u0641\u0639\u0627\u0644 \u0646\u0634\u062f: " + t.getMessage());
         }
     }
 
@@ -196,14 +247,22 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
 
     private void jsResult(final String text) {
         final String safe = jsonEscape(text);
-        ui.post(() -> webView.evaluateJavascript(
-                "window.__nativeVoiceResult && window.__nativeVoiceResult(\"" + safe + "\")", null));
+        ui.post(new Runnable() {
+            public void run() {
+                webView.evaluateJavascript(
+                    "window.__nativeVoiceResult && window.__nativeVoiceResult(\"" + safe + "\")", null);
+            }
+        });
     }
 
     private void jsStatus(final String msg) {
         final String safe = jsonEscape(msg);
-        ui.post(() -> webView.evaluateJavascript(
-                "window.__nativeVoiceStatus && window.__nativeVoiceStatus(\"" + safe + "\")", null));
+        ui.post(new Runnable() {
+            public void run() {
+                webView.evaluateJavascript(
+                    "window.__nativeVoiceStatus && window.__nativeVoiceStatus(\"" + safe + "\")", null);
+            }
+        });
     }
 
     private String jsonEscape(String s) {
