@@ -1,0 +1,8 @@
+.gradle/
+build/
+/local.properties
+.idea/
+*.iml
+.DS_Store
+# Persian model is downloaded automatically during the GitHub build
+app/src/main/assets/model-fa/
