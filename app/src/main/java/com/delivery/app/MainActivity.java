@@ -8,6 +8,8 @@ import android.os.Looper;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -16,6 +18,7 @@ import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.webkit.WebViewAssetLoader;
 
 import org.json.JSONObject;
 import org.vosk.Model;
@@ -27,12 +30,15 @@ import org.vosk.android.StorageService;
 public class MainActivity extends AppCompatActivity implements RecognitionListener {
 
     private static final int REQ_AUDIO = 101;
+    private static final String APP_URL =
+            "https://appassets.androidplatform.net/assets/index.html";
 
     private WebView webView;
     private Model model;
     private SpeechService speechService;
     private boolean modelReady = false;
     private boolean startPending = false;
+    private boolean startWhenModelReady = false;
     private final Handler ui = new Handler(Looper.getMainLooper());
 
     @Override
@@ -44,13 +50,24 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
 
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
-        s.setDomStorageEnabled(true);          // localStorage for the app
+        s.setDomStorageEnabled(true);
         s.setDatabaseEnabled(true);
         s.setMediaPlaybackRequiresUserGesture(false);
-        s.setAllowFileAccess(true);
+        s.setAllowFileAccess(false);
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
 
-        webView.setWebViewClient(new WebViewClient());
+        final WebViewAssetLoader assetLoader = new WebViewAssetLoader.Builder()
+                .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
+                .build();
+
+        webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view,
+                                                              WebResourceRequest request) {
+                return assetLoader.shouldInterceptRequest(request.getUrl());
+            }
+        });
+
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onPermissionRequest(final PermissionRequest request) {
@@ -58,17 +75,13 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
             }
         });
 
-        // JS <-> Native bridge, exposed as window.AndroidVoice
         webView.addJavascriptInterface(new VoiceBridge(), "AndroidVoice");
+        webView.loadUrl(APP_URL);
 
-        webView.loadUrl("file:///android_asset/index.html");
-
-        // Prepare offline model + mic permission up front
         ensureAudioPermission();
         initModel();
     }
 
-    /* ============ Permissions ============ */
     private void ensureAudioPermission() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
                 != PackageManager.PERMISSION_GRANTED) {
@@ -91,18 +104,20 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
         }
     }
 
-    /* ============ Vosk model ============ */
     private void initModel() {
-        // Unpacks assets/model-fa -> internal storage, once.
         StorageService.unpack(this, "model-fa", "model",
                 (m) -> {
                     model = m;
                     modelReady = true;
+                    jsStatus("\u0645\u062f\u0644 \u0635\u0648\u062a\u06cc \u0622\u0645\u0627\u062f\u0647 \u0634\u062f");
+                    if (startWhenModelReady) {
+                        startWhenModelReady = false;
+                        beginRecognition();
+                    }
                 },
                 (e) -> jsStatus("\u062e\u0637\u0627 \u062f\u0631 \u0628\u0627\u0631\u06af\u0630\u0627\u0631\u06cc \u0645\u062f\u0644 \u0635\u0648\u062a\u06cc"));
     }
 
-    /* ============ JS bridge ============ */
     private class VoiceBridge {
         @JavascriptInterface
         public void start() {
@@ -125,10 +140,11 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
 
     private void beginRecognition() {
         if (!modelReady || model == null) {
-            jsStatus("\u0645\u062f\u0644 \u0635\u0648\u062a\u06cc \u062f\u0631 \u062d\u0627\u0644 \u0622\u0645\u0627\u062f\u0647\u200c\u0633\u0627\u0632\u06cc\u002e\u002e\u002e \u06a9\u0645\u06cc \u0635\u0628\u0631 \u06a9\u0646\u06cc\u062f");
+            startWhenModelReady = true;
+            jsStatus("\u0645\u062f\u0644 \u0635\u0648\u062a\u06cc \u062f\u0631 \u062d\u0627\u0644 \u0622\u0645\u0627\u062f\u0647\u200c\u0633\u0627\u0632\u06cc... \u06a9\u0645\u06cc \u0635\u0628\u0631 \u06a9\u0646\u06cc\u062f");
             return;
         }
-        if (speechService != null) return; // already running
+        if (speechService != null) return;
         try {
             Recognizer rec = new Recognizer(model, 16000.0f);
             speechService = new SpeechService(rec, 16000.0f);
@@ -139,6 +155,7 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
     }
 
     private void stopRecognition() {
+        startWhenModelReady = false;
         if (speechService != null) {
             speechService.stop();
             speechService.shutdown();
@@ -146,26 +163,20 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
         }
     }
 
-    /* ============ Vosk RecognitionListener ============ */
     @Override
     public void onResult(String hypothesis) {
-        // Fires per final utterance -> truly continuous, no ding-ding.
         String text = extractText(hypothesis);
-        if (text != null && !text.isEmpty()) {
-            jsResult(text);
-        }
+        if (text != null && !text.isEmpty()) jsResult(text);
     }
 
     @Override
     public void onFinalResult(String hypothesis) {
         String text = extractText(hypothesis);
-        if (text != null && !text.isEmpty()) {
-            jsResult(text);
-        }
+        if (text != null && !text.isEmpty()) jsResult(text);
     }
 
     @Override
-    public void onPartialResult(String hypothesis) { /* ignore interim */ }
+    public void onPartialResult(String hypothesis) { }
 
     @Override
     public void onError(Exception e) {
@@ -173,7 +184,7 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
     }
 
     @Override
-    public void onTimeout() { /* keep listening; SpeechService continues */ }
+    public void onTimeout() { }
 
     private String extractText(String hypothesisJson) {
         try {
@@ -183,7 +194,6 @@ public class MainActivity extends AppCompatActivity implements RecognitionListen
         return null;
     }
 
-    /* ============ Call back into the web app ============ */
     private void jsResult(final String text) {
         final String safe = jsonEscape(text);
         ui.post(() -> webView.evaluateJavascript(
