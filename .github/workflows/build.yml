@@ -26,15 +26,20 @@ jobs:
         run: |
           set -e
           MODEL_URL="https://alphacephei.com/vosk/models/vosk-model-small-fa-0.5.zip"
-          echo "Downloading $MODEL_URL"
           curl -L -o model.zip "$MODEL_URL"
           unzip -q model.zip -d model_tmp
           mkdir -p app/src/main/assets/model-fa
           INNER=$(ls -d model_tmp/*/ | head -n 1)
-          echo "Inner model folder: $INNER"
           cp -r "$INNER"* app/src/main/assets/model-fa/
-          echo "---- model-fa contents ----"
           ls -la app/src/main/assets/model-fa/
+
+      - name: Bundle JS libraries (offline, no CDN needed on phone)
+        run: |
+          set -e
+          mkdir -p app/src/main/assets/lib
+          curl -L -o app/src/main/assets/lib/supabase.min.js "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"
+          curl -L -o app/src/main/assets/lib/xlsx.full.min.js "https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"
+          ls -la app/src/main/assets/lib/
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
